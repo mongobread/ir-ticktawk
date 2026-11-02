@@ -8,6 +8,8 @@ A lightweight Chrome Extension (Manifest V3) that monitors the [Tawk.to Agent Da
 
 - **Accurate Waiting Timer**: Automatically detects the incoming visitor's message and parses the actual timestamp (e.g., `4:06 AM`).
 - **Refresh & Navigation Resilient**: Persists active countdowns in `chrome.storage.local`—refreshing the dashboard or navigating between dashboard tabs does not reset the timer to zero.
+- **3-Chat Timebomb Stack & `«` / `»` Navigation**: Tracks multiple waiting visitors ordered by deadline, displays up to 3 stacked timebomb rows inside the badge, and lets you cycle through queued chats using **`«`** and **`»`** arrows.
+- **Click-to-Jump to Chat**: Click the main **Urgent/Waiting** banner or any of the 3 stacked timebomb rows to automatically navigate to and focus that visitor's chat in the Tawk.to dashboard.
 - **1:45 Pre-Alarm Chime (Customizable)**: Plays a gentle 3-tone harmonic chime (`E5` → `A5` → `E6`) 15 seconds before the 2-minute mark (`1:45` by default).
 - **3:00 Max Looping Urgent Alarm (Customizable)**: Sounds a distinct, rhythmic siren every 1.8 seconds once waiting time reaches `3:00` (by default) until an agent replies or clicks **Silence**.
 - **In-Modal Alarm Settings (`⚙️`)**: Customize both the **1st Pre-Alarm** and **Max Urgent Alarm** thresholds (`Min` and `Sec`) directly inside the floating modal box, persisted in `chrome.storage.local`.

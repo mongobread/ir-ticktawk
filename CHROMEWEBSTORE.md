@@ -89,7 +89,8 @@ https://github.com/mongobread/ir-ticktawk/blob/main/PRIVACY.md
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 1.2.1 | 2026-11-03 | Fixed bug where internal Agent DMs and Group Chats were scanned as visitor chats. | Ready to Submit |
+| 1.3.0 | 2026-11-03 | Added 3-chat timebomb stack, « and » carousel navigation, and click-to-jump to visitor chat. | Ready to Submit |
+| 1.2.1 | 2026-11-03 | Fixed bug where internal Agent DMs and Group Chats were scanned as visitor chats. | Draft |
 | 1.2.0 | 2026-11-03 | Added 1:45 default pre-alarm, customizable alarm thresholds in modal, and store icons. | Draft |
 | 1.1.1 | 2026-11-03 | Scoped strictly to dashboard.tawk.to, added draggable UI, PiP pop-out, and persistent timer. | Draft |
 | 1.0.0 | 2026-11-03 | Initial extension build. | Draft |
