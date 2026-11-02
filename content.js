@@ -20,8 +20,8 @@
   }
 
   // Prevent duplicate initialization in the same frame
-  if (window.__IR_TICKTAWK_V120__) return;
-  window.__IR_TICKTAWK_V120__ = true;
+  if (window.__IR_TICKTAWK_V121__) return;
+  window.__IR_TICKTAWK_V121__ = true;
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -300,6 +300,7 @@
     chrome.storage.local
       .set({
         [STORAGE_STATE_KEY]: {
+          schemaVersion: 2,
           waitingSince: state.waitingSince,
           msgKey: state.msgKey,
           lastVisitorMsgText: state.lastVisitorMsgText,
@@ -340,16 +341,22 @@
       chrome.storage.local.get([STORAGE_STATE_KEY, STORAGE_PREFS_KEY], (res) => {
         if (res && res[STORAGE_STATE_KEY]) {
           const s = res[STORAGE_STATE_KEY];
-          state.waitingSince = s.waitingSince || null;
-          state.msgKey = s.msgKey || '';
-          state.lastVisitorMsgText = s.lastVisitorMsgText || '';
-          state.lastVisitorTimeStr = s.lastVisitorTimeStr || '';
-          state.lastVisitorName = s.lastVisitorName || 'Visitor';
-          state.status = s.status || 'idle';
-          state.chimeFired = Boolean(s.chimeFired);
-          state.urgentFired = Boolean(s.urgentFired);
-          state.silenced = Boolean(s.silenced);
-          state.detectedMessagesCount = s.detectedMessagesCount || 0;
+          // Only restore state created by schemaVersion 2 (verified visitor chats, not DMs)
+          if (s.schemaVersion === 2) {
+            state.waitingSince = s.waitingSince || null;
+            state.msgKey = s.msgKey || '';
+            state.lastVisitorMsgText = s.lastVisitorMsgText || '';
+            state.lastVisitorTimeStr = s.lastVisitorTimeStr || '';
+            state.lastVisitorName = s.lastVisitorName || 'Visitor';
+            state.status = s.status || 'idle';
+            state.chimeFired = Boolean(s.chimeFired);
+            state.urgentFired = Boolean(s.urgentFired);
+            state.silenced = Boolean(s.silenced);
+            state.detectedMessagesCount = s.detectedMessagesCount || 0;
+          } else {
+            // Clear any old state that may have been triggered by a DM
+            saveSharedState();
+          }
         }
         if (res && res[STORAGE_PREFS_KEY]) {
           const p = res[STORAGE_PREFS_KEY];
@@ -1420,12 +1427,45 @@
       });
     }
 
+    /**
+     * Returns true ONLY when the active view is a customer/visitor chat,
+     * and returns false when viewing internal Agent DMs or Group Chats (e.g., "DMs" sidebar).
+     */
+    isVisitorChatContext(bodyText) {
+      const text = bodyText || (document.body ? document.body.innerText : '') || '';
+
+      // 1. Exclude internal DMs & Group Chats view (left sidebar header says "DMs")
+      const headerNodes = document.querySelectorAll('h1, h2, h3, h4, span, div, p');
+      for (const el of headerNodes) {
+        if (el.children.length === 0 && (el.textContent || '').trim() === 'DMs') {
+          const r = el.getBoundingClientRect();
+          if (r.left > 0 && r.left < 300 && r.top >= 0 && r.top < 100) {
+            return false;
+          }
+        }
+      }
+
+      // 2. Require positive Visitor Chat UI markers on screen
+      const hasWhisperOrSmartReply =
+        text.includes('Whisper') || text.includes('Smart reply') || text.includes('Join Chat');
+      const hasActiveVisitorsBar =
+        /Active\s*\(\d+\)/.test(text) && text.includes('Visitors');
+      const hasVisitorDetailsPanel =
+        text.includes('ORGANIZATION') && text.includes('DEALS');
+
+      return Boolean(hasWhisperOrSmartReply || hasActiveVisitorsBar || hasVisitorDetailsPanel);
+    }
+
     bindAgentInteractions() {
       document.addEventListener(
         'keydown',
         (e) => {
           // Ignore keystrokes inside our own floating badge Shadow DOM
           if (this.badge && e.composedPath().includes(this.badge.host)) {
+            return;
+          }
+          // Ignore keystrokes when chatting inside internal DMs / Group Chats
+          if (!this.isVisitorChatContext()) {
             return;
           }
           if (e.key === 'Enter' && !e.shiftKey) {
@@ -1478,7 +1518,14 @@
 
       const bodyText = (document.body ? document.body.innerText : '') || '';
 
-      const timeRegex = /\b\d{1,2}:\d{2}\s*(?:[AP]M)?\b/i;
+      // Do NOT scan internal DMs or Group Chats — only scan Visitor Chats!
+      if (!this.isVisitorChatContext(bodyText)) {
+        state.detectedMessagesCount = 0;
+        return;
+      }
+
+      // Visitor chat bubbles use AM/PM timestamps (e.g., "4:06 AM"), unlike DMs ("05:07")
+      const timeRegex = /\b\d{1,2}:\d{2}\s*[AP]M\b/i;
       const allTextNodes = document.querySelectorAll('span, div, p, time, small, em');
       const messageItems = [];
       const seenBubbles = new Set();
