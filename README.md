@@ -2,7 +2,7 @@
 
 A lightweight Chrome Extension (Manifest V3) that monitors the [Tawk.to Agent Dashboard](https://dashboard.tawk.to/) (`dashboard.tawk.to/#/chat`) to ensure visitor messages never go unanswered.
 
-![IR TickTawk Preview](https://raw.githubusercontent.com/mongobread/ir-ticktawk/main/screenshot.png) <!-- optional -->
+![IR TickTawk Preview](https://s3.amazonaws.com/tawk-to-pi/f0e6db80e82a123d620d14f1b37b01513a9376a0) <!-- optional -->
 
 ## ✨ Features
 
