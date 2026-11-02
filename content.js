@@ -1,9 +1,9 @@
 /**
- * IR TickTawk - Chrome Extension Content Script (v1.1.0)
+ * IR TickTawk - Chrome Extension Content Script (v1.2.0)
+ * - Default 1st Pre-Alarm Chime at 1:45 (105s) and Max Urgent Looping Alarm at 3:00 (180s)
+ * - User-configurable alarm thresholds inside the floating modal box
  * - Remembers timer across page refreshes & parses actual message timestamps (e.g., "4:06 AM")
- * - Draggable floating badge that persists position and floats across all browser tabs
- * - Supports Always-on-Top Picture-in-Picture pop-out window
- * - Sounds Web Audio alerts (2-minute chime & 3-minute looping urgent alarm)
+ * - Draggable floating badge + Always-on-Top Picture-in-Picture pop-out window
  */
 
 (() => {
@@ -20,21 +20,27 @@
   }
 
   // Prevent duplicate initialization in the same frame
-  if (window.__IR_TICKTAWK_V111__) return;
-  window.__IR_TICKTAWK_V111__ = true;
+  if (window.__IR_TICKTAWK_V120__) return;
+  window.__IR_TICKTAWK_V120__ = true;
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
   }
 
   // ==========================================
-  // CONFIGURATION & THRESHOLDS
+  // CONFIGURATION & DEFAULT THRESHOLDS
   // ==========================================
-  const CHIME_THRESHOLD_SEC = 120; // 2 minutes (120 seconds)
-  const URGENT_THRESHOLD_SEC = 180; // 3 minutes (180 seconds)
+  const DEFAULT_CHIME_SEC = 105; // 1:45 (15 seconds before 2m) pre-alarm chime
+  const DEFAULT_URGENT_SEC = 180; // 3:00 (180 seconds) max urgent alarm
   const URGENT_LOOP_INTERVAL_MS = 1800; // Alarm pulses every 1.8 seconds
   const STORAGE_STATE_KEY = 'ir_ticktawk_shared_state';
   const STORAGE_PREFS_KEY = 'ir_ticktawk_prefs';
+
+  function formatShortTime(totalSec) {
+    const m = Math.floor(totalSec / 60);
+    const s = String(totalSec % 60).padStart(2, '0');
+    return `${m}:${s}`;
+  }
 
   // ==========================================
   // TIMESTAMP PARSER (Parses "4:06 AM" from chat bubble)
@@ -116,7 +122,7 @@
         return;
       }
 
-      log('Playing 2-Minute Warning Chime 🔔');
+      log(`Playing Pre-Alarm Chime (${formatShortTime(state.chimeThresholdSec)}) 🔔`);
       const now = ctx.currentTime;
       const notes = [
         { freq: 659.25, time: 0.00, dur: 0.35, gain: 0.25 }, // E5
@@ -192,7 +198,7 @@
     async startUrgentAlarm() {
       if (this.isUrgentLooping || this.isMuted) return;
       this.isUrgentLooping = true;
-      log('Starting 3-Minute Looping Urgent Alarm 🚨');
+      log(`Starting Max Urgent Looping Alarm (${formatShortTime(state.urgentThresholdSec)}) 🚨`);
 
       await this.ensureResumed();
       this.playUrgentPulse();
@@ -282,7 +288,9 @@
     detectedMessagesCount: 0,
     isMinimized: false,
     isMuted: false,
-    pos: null // { left, top }
+    pos: null, // { left, top }
+    chimeThresholdSec: DEFAULT_CHIME_SEC,
+    urgentThresholdSec: DEFAULT_URGENT_SEC
   };
 
   const audio = new AudioManager();
@@ -315,7 +323,9 @@
         [STORAGE_PREFS_KEY]: {
           isMuted: state.isMuted,
           isMinimized: state.isMinimized,
-          pos: state.pos
+          pos: state.pos,
+          chimeThresholdSec: state.chimeThresholdSec,
+          urgentThresholdSec: state.urgentThresholdSec
         }
       })
       .catch(() => {});
@@ -353,6 +363,12 @@
           if (p.pos && typeof p.pos.left === 'number' && typeof p.pos.top === 'number') {
             state.pos = p.pos;
           }
+          if (typeof p.chimeThresholdSec === 'number' && p.chimeThresholdSec >= 5) {
+            state.chimeThresholdSec = p.chimeThresholdSec;
+          }
+          if (typeof p.urgentThresholdSec === 'number' && p.urgentThresholdSec > state.chimeThresholdSec) {
+            state.urgentThresholdSec = p.urgentThresholdSec;
+          }
         }
         resolve();
       });
@@ -360,7 +376,7 @@
   }
 
   // ==========================================
-  // DRAGGABLE FLOATING BADGE UI (Shadow DOM + PiP)
+  // DRAGGABLE FLOATING BADGE UI (Shadow DOM + PiP + Settings)
   // ==========================================
   class BadgeUI {
     constructor() {
@@ -372,6 +388,7 @@
       this.dragMoved = false;
       this.dragOffsetX = 0;
       this.dragOffsetY = 0;
+      this.settingsOpen = false;
       this.init();
     }
 
@@ -412,6 +429,7 @@
               <span class="tt-mini-timer" id="tt-mini-timer">--:--</span>
             </div>
             <div class="tt-controls">
+              <button class="tt-btn-icon" id="tt-btn-settings" title="Configure Alarm Times">⚙️</button>
               <button class="tt-btn-icon" id="tt-btn-pip" title="Pop-out Always-on-Top Floating Window">📌</button>
               <button class="tt-btn-icon" id="tt-btn-mute" title="Toggle Sound">🔔</button>
               <button class="tt-btn-icon" id="tt-btn-min" title="Minimize / Expand">_</button>
@@ -423,9 +441,37 @@
               <div class="tt-status-badge" id="tt-badge-tag">Idle</div>
             </div>
             <div class="tt-desc" id="tt-desc">Monitoring dashboard.tawk.to</div>
+
+            <!-- Collapsible Alarm Settings Box -->
+            <div class="tt-settings-panel" id="tt-settings-panel" style="display:none;">
+              <div class="tt-settings-title">Alarm Thresholds</div>
+              <div class="tt-setting-row">
+                <label class="tt-setting-label">1st Pre-Alarm:</label>
+                <div class="tt-time-inputs">
+                  <input type="number" id="tt-chime-min" class="tt-num-input" min="0" max="59" value="1" />
+                  <span class="tt-unit">m</span>
+                  <input type="number" id="tt-chime-sec" class="tt-num-input" min="0" max="59" value="45" />
+                  <span class="tt-unit">s</span>
+                </div>
+              </div>
+              <div class="tt-setting-row">
+                <label class="tt-setting-label">Max Urgent:</label>
+                <div class="tt-time-inputs">
+                  <input type="number" id="tt-urgent-min" class="tt-num-input" min="0" max="59" value="3" />
+                  <span class="tt-unit">m</span>
+                  <input type="number" id="tt-urgent-sec" class="tt-num-input" min="0" max="59" value="0" />
+                  <span class="tt-unit">s</span>
+                </div>
+              </div>
+              <div class="tt-settings-actions">
+                <button class="tt-action-btn save" id="tt-btn-save-settings">Save</button>
+                <button class="tt-action-btn" id="tt-btn-default-settings" title="Reset to 1:45 and 3:00">Defaults (1:45 / 3:00)</button>
+              </div>
+            </div>
+
             <div class="tt-actions">
-              <button class="tt-action-btn" id="tt-btn-test-chime" title="Test 2m Chime sound">Test 2m Chime</button>
-              <button class="tt-action-btn" id="tt-btn-test-alarm" title="Test 3m Alarm sound">Test 3m Alarm</button>
+              <button class="tt-action-btn" id="tt-btn-test-chime" title="Test 1st Pre-Alarm Chime">Test 1:45 Chime</button>
+              <button class="tt-action-btn" id="tt-btn-test-alarm" title="Test Max Urgent Alarm">Test 3:00 Alarm</button>
               <button class="tt-action-btn silence" id="tt-btn-silence" style="display:none;" title="Stop Alarm">Silence</button>
             </div>
             <div class="tt-actions">
@@ -451,9 +497,17 @@
         miniTimer: this.shadow.getElementById('tt-mini-timer'),
         badgeTag: this.shadow.getElementById('tt-badge-tag'),
         desc: this.shadow.getElementById('tt-desc'),
+        btnSettings: this.shadow.getElementById('tt-btn-settings'),
         btnPip: this.shadow.getElementById('tt-btn-pip'),
         btnMute: this.shadow.getElementById('tt-btn-mute'),
         btnMin: this.shadow.getElementById('tt-btn-min'),
+        settingsPanel: this.shadow.getElementById('tt-settings-panel'),
+        inputChimeMin: this.shadow.getElementById('tt-chime-min'),
+        inputChimeSec: this.shadow.getElementById('tt-chime-sec'),
+        inputUrgentMin: this.shadow.getElementById('tt-urgent-min'),
+        inputUrgentSec: this.shadow.getElementById('tt-urgent-sec'),
+        btnSaveSettings: this.shadow.getElementById('tt-btn-save-settings'),
+        btnDefaultSettings: this.shadow.getElementById('tt-btn-default-settings'),
         btnTestChime: this.shadow.getElementById('tt-btn-test-chime'),
         btnTestAlarm: this.shadow.getElementById('tt-btn-test-alarm'),
         btnSilence: this.shadow.getElementById('tt-btn-silence'),
@@ -462,7 +516,6 @@
         audioStatus: this.shadow.getElementById('tt-audio-status')
       };
 
-      // Hide PiP button if browser doesn't support documentPictureInPicture
       if (!('documentPictureInPicture' in window)) {
         this.elements.btnPip.style.display = 'none';
       }
@@ -491,7 +544,7 @@
           border-radius: 14px;
           box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 1px 1px rgba(255, 255, 255, 0.1);
           padding: 12px 16px;
-          min-width: 280px;
+          min-width: 285px;
           max-width: 350px;
           cursor: grab;
           transition: box-shadow 0.2s, border-color 0.2s;
@@ -576,7 +629,7 @@
         .tt-controls {
           display: flex;
           align-items: center;
-          gap: 4px;
+          gap: 3px;
         }
         .tt-btn-icon {
           background: transparent;
@@ -591,8 +644,8 @@
           font-size: 13px;
           transition: background 0.15s, color 0.15s;
         }
-        .tt-btn-icon:hover {
-          background: rgba(255, 255, 255, 0.15);
+        .tt-btn-icon:hover, .tt-btn-icon.active {
+          background: rgba(255, 255, 255, 0.16);
           color: #ffffff;
         }
         .tt-body {
@@ -653,6 +706,68 @@
           overflow: hidden;
           text-overflow: ellipsis;
         }
+        /* Settings Panel */
+        .tt-settings-panel {
+          margin-top: 6px;
+          padding: 10px;
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          border-radius: 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          cursor: default;
+        }
+        .tt-settings-title {
+          font-size: 11px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+          color: #93c5fd;
+        }
+        .tt-setting-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        .tt-setting-label {
+          font-size: 12px;
+          color: #e5e7eb;
+          font-weight: 500;
+        }
+        .tt-time-inputs {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
+        .tt-num-input {
+          width: 44px;
+          padding: 4px 6px;
+          border-radius: 6px;
+          border: 1px solid rgba(255, 255, 255, 0.25);
+          background: rgba(17, 24, 39, 0.9);
+          color: #ffffff;
+          font-size: 12px;
+          font-weight: 700;
+          font-family: ui-monospace, SFMono-Regular, monospace;
+          text-align: center;
+          outline: none;
+        }
+        .tt-num-input:focus {
+          border-color: #3b82f6;
+          box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
+        }
+        .tt-unit {
+          font-size: 11px;
+          color: #9ca3af;
+          font-weight: 600;
+        }
+        .tt-settings-actions {
+          display: flex;
+          gap: 6px;
+          margin-top: 2px;
+        }
         .tt-actions {
           margin-top: 6px;
           display: flex;
@@ -675,6 +790,14 @@
         .tt-action-btn:hover {
           background: rgba(255, 255, 255, 0.18);
           color: #ffffff;
+        }
+        .tt-action-btn.save {
+          background: #2563eb;
+          border-color: #3b82f6;
+          color: #ffffff;
+        }
+        .tt-action-btn.save:hover {
+          background: #1d4ed8;
         }
         .tt-action-btn.silence {
           background: #ef4444;
@@ -720,9 +843,29 @@
     }
 
     ensureInDOM() {
-      if (this.pipWindow) return; // Currently popped out in Picture-in-Picture
+      if (this.pipWindow) return;
       if (!this.host.isConnected && document.body) {
         document.body.appendChild(this.host);
+      }
+    }
+
+    syncThresholdInputsAndLabels() {
+      const cMin = Math.floor(state.chimeThresholdSec / 60);
+      const cSec = state.chimeThresholdSec % 60;
+      const uMin = Math.floor(state.urgentThresholdSec / 60);
+      const uSec = state.urgentThresholdSec % 60;
+
+      this.elements.inputChimeMin.value = String(cMin);
+      this.elements.inputChimeSec.value = String(cSec).padStart(2, '0');
+      this.elements.inputUrgentMin.value = String(uMin);
+      this.elements.inputUrgentSec.value = String(uSec).padStart(2, '0');
+
+      const chimeLabel = formatShortTime(state.chimeThresholdSec);
+      const urgentLabel = formatShortTime(state.urgentThresholdSec);
+
+      this.elements.btnTestChime.textContent = `Test ${chimeLabel} Chime`;
+      if (!audio.isUrgentLooping) {
+        this.elements.btnTestAlarm.textContent = `Test ${urgentLabel} Alarm`;
       }
     }
 
@@ -737,7 +880,7 @@
 
       const rect = this.host.getBoundingClientRect();
       const w = rect.width || 290;
-      const h = rect.height || 150;
+      const h = rect.height || 160;
       const maxLeft = Math.max(8, window.innerWidth - w - 8);
       const maxTop = Math.max(8, window.innerHeight - h - 8);
 
@@ -755,9 +898,17 @@
 
       badge.addEventListener('pointerdown', (e) => {
         if (this.pipWindow) return;
-        // Do not start drag if clicking a button
         const path = e.composedPath();
-        if (path.some((el) => el && el.tagName === 'BUTTON')) {
+        // Do not start drag when interacting with buttons, inputs, or settings panel
+        if (
+          path.some(
+            (el) =>
+              el &&
+              (el.tagName === 'BUTTON' ||
+                el.tagName === 'INPUT' ||
+                el.id === 'tt-settings-panel')
+          )
+        ) {
           return;
         }
 
@@ -817,8 +968,8 @@
 
       try {
         const pipWin = await window.documentPictureInPicture.requestWindow({
-          width: 320,
-          height: 215
+          width: 325,
+          height: 260
         });
         this.pipWindow = pipWin;
 
@@ -832,7 +983,8 @@
             display: flex;
             align-items: stretch;
             justify-content: stretch;
-            overflow: hidden;
+            overflow-x: hidden;
+            overflow-y: auto;
           }
           .tt-wrapper {
             width: 100%;
@@ -840,7 +992,7 @@
           }
           .tt-badge {
             width: 100%;
-            height: 100%;
+            min-height: 100%;
             max-width: none;
             border-radius: 0;
             border: none;
@@ -861,6 +1013,48 @@
     }
 
     bindEvents() {
+      // Stop keyboard events inside settings inputs from bubbling to Tawk.to
+      [
+        this.elements.inputChimeMin,
+        this.elements.inputChimeSec,
+        this.elements.inputUrgentMin,
+        this.elements.inputUrgentSec
+      ].forEach((input) => {
+        input.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') {
+            this.saveThresholdSettings();
+          }
+        });
+      });
+
+      // Toggle Settings Drawer
+      this.elements.btnSettings.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.settingsOpen = !this.settingsOpen;
+        this.elements.settingsPanel.style.display = this.settingsOpen ? 'flex' : 'none';
+        this.elements.btnSettings.classList.toggle('active', this.settingsOpen);
+        if (this.settingsOpen) {
+          this.syncThresholdInputsAndLabels();
+        }
+      });
+
+      // Save Custom Alarm Thresholds
+      this.elements.btnSaveSettings.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.saveThresholdSettings();
+      });
+
+      // Reset to Defaults (1:45 and 3:00)
+      this.elements.btnDefaultSettings.addEventListener('click', (e) => {
+        e.stopPropagation();
+        state.chimeThresholdSec = DEFAULT_CHIME_SEC;
+        state.urgentThresholdSec = DEFAULT_URGENT_SEC;
+        this.syncThresholdInputsAndLabels();
+        savePrefs();
+        this.flashSavedFeedback();
+      });
+
       // Pop-out Always-on-Top PiP window
       this.elements.btnPip.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -893,7 +1087,7 @@
         }
       });
 
-      // Test 2-minute chime
+      // Test Pre-Alarm Chime
       this.elements.btnTestChime.addEventListener('click', async (e) => {
         e.stopPropagation();
         await audio.ensureResumed();
@@ -901,14 +1095,16 @@
         audio.playChime();
       });
 
-      // Test 3-minute urgent alarm
+      // Test Max Urgent Alarm
       this.elements.btnTestAlarm.addEventListener('click', async (e) => {
         e.stopPropagation();
         await audio.ensureResumed();
         this.updateAudioIndicator();
         if (audio.isUrgentLooping) {
           audio.stopUrgentAlarm();
-          this.elements.btnTestAlarm.textContent = 'Test 3m Alarm';
+          this.elements.btnTestAlarm.textContent = `Test ${formatShortTime(
+            state.urgentThresholdSec
+          )} Alarm`;
           this.elements.btnSilence.style.display = 'none';
         } else {
           audio.startUrgentAlarm();
@@ -917,13 +1113,15 @@
         }
       });
 
-      // Silence Alarm button (syncs across all tabs)
+      // Silence Alarm button
       this.elements.btnSilence.addEventListener('click', (e) => {
         e.stopPropagation();
         audio.stopUrgentAlarm();
         state.silenced = true;
         this.elements.btnSilence.style.display = 'none';
-        this.elements.btnTestAlarm.textContent = 'Test 3m Alarm';
+        this.elements.btnTestAlarm.textContent = `Test ${formatShortTime(
+          state.urgentThresholdSec
+        )} Alarm`;
         saveSharedState();
       });
 
@@ -956,7 +1154,9 @@
         state.urgentFired = false;
         state.silenced = false;
         this.elements.btnSilence.style.display = 'none';
-        this.elements.btnTestAlarm.textContent = 'Test 3m Alarm';
+        this.elements.btnTestAlarm.textContent = `Test ${formatShortTime(
+          state.urgentThresholdSec
+        )} Alarm`;
         saveSharedState();
         this.updateStatus('idle', 0);
       });
@@ -968,6 +1168,50 @@
         this.updateAudioIndicator();
         audio.playChime();
       });
+    }
+
+    saveThresholdSettings() {
+      const cMin = Math.max(0, parseInt(this.elements.inputChimeMin.value, 10) || 0);
+      const cSec = Math.max(0, Math.min(59, parseInt(this.elements.inputChimeSec.value, 10) || 0));
+      const uMin = Math.max(0, parseInt(this.elements.inputUrgentMin.value, 10) || 0);
+      const uSec = Math.max(0, Math.min(59, parseInt(this.elements.inputUrgentSec.value, 10) || 0));
+
+      let chimeTotal = Math.max(5, cMin * 60 + cSec);
+      let urgentTotal = uMin * 60 + uSec;
+
+      if (urgentTotal <= chimeTotal) {
+        urgentTotal = chimeTotal + 15;
+      }
+
+      state.chimeThresholdSec = chimeTotal;
+      state.urgentThresholdSec = urgentTotal;
+
+      // Re-evaluate chime/urgent flags against current elapsed time if waiting
+      if (state.waitingSince) {
+        const elapsed = Math.floor((Date.now() - state.waitingSince) / 1000);
+        if (elapsed < state.chimeThresholdSec) {
+          state.chimeFired = false;
+          state.urgentFired = false;
+          audio.stopUrgentAlarm();
+        } else if (elapsed < state.urgentThresholdSec) {
+          state.urgentFired = false;
+          audio.stopUrgentAlarm();
+        }
+        saveSharedState();
+      }
+
+      this.syncThresholdInputsAndLabels();
+      savePrefs();
+      this.flashSavedFeedback();
+    }
+
+    flashSavedFeedback() {
+      const btn = this.elements.btnSaveSettings;
+      const orig = btn.textContent;
+      btn.textContent = '✓ Saved!';
+      setTimeout(() => {
+        btn.textContent = orig;
+      }, 1200);
     }
 
     toggleMinimize(force, persist = true) {
@@ -1011,13 +1255,15 @@
       this.elements.badgeTag.className = `tt-status-badge ${status}`;
 
       const timeLabel = state.lastVisitorTimeStr ? ` (${state.lastVisitorTimeStr})` : '';
+      const chimeStr = formatShortTime(state.chimeThresholdSec);
+      const urgentStr = formatShortTime(state.urgentThresholdSec);
 
       switch (status) {
         case 'idle':
           this.elements.timer.textContent = '00:00';
           this.elements.miniTimer.textContent = '--:--';
           this.elements.badgeTag.textContent = 'Idle';
-          this.elements.desc.textContent = `Monitoring (${state.detectedMessagesCount} msgs detected)`;
+          this.elements.desc.textContent = `Pre-alarm ${chimeStr} · Max ${urgentStr} (${state.detectedMessagesCount} msgs)`;
           this.elements.btnSilence.style.display = 'none';
           break;
 
@@ -1030,14 +1276,14 @@
           break;
 
         case 'warning':
-          this.elements.badgeTag.textContent = '2m Warning';
-          this.elements.desc.textContent = `Waiting > 2m${timeLabel}: "${messageSnippet}"`;
+          this.elements.badgeTag.textContent = `${chimeStr} Pre-Alarm`;
+          this.elements.desc.textContent = `Pre-Alarm > ${chimeStr}${timeLabel}: "${messageSnippet}"`;
           this.elements.btnSilence.style.display = 'none';
           break;
 
         case 'urgent':
-          this.elements.badgeTag.textContent = '3m Urgent!';
-          this.elements.desc.textContent = `URGENT > 3m${timeLabel}: "${messageSnippet}"`;
+          this.elements.badgeTag.textContent = `${urgentStr} Urgent!`;
+          this.elements.desc.textContent = `URGENT > ${urgentStr}${timeLabel}: "${messageSnippet}"`;
           if (audio.isUrgentLooping || !state.silenced) {
             this.elements.btnSilence.style.display = 'inline-block';
           }
@@ -1078,16 +1324,15 @@
 
       if (this.badge) {
         this.badge.updateMuteIcon();
+        this.badge.syncThresholdInputsAndLabels();
         this.badge.toggleMinimize(state.isMinimized, false);
         if (state.pos) {
           this.badge.applyPosition(state.pos);
         }
       }
 
-      // Listen for storage updates from other tabs
       this.bindStorageSync();
 
-      // Unlock AudioContext on any user interaction in this tab
       const unlockAudio = () => {
         audio.ensureResumed().then(() => {
           if (this.badge) this.badge.updateAudioIndicator();
@@ -1097,7 +1342,6 @@
         window.addEventListener(evt, unlockAudio, { passive: true, capture: true });
       });
 
-      // Scan DOM for Tawk.to chats on dashboard.tawk.to
       if (IS_TAWK_DASHBOARD) {
         this.observeDOM();
         this.bindAgentInteractions();
@@ -1145,6 +1389,15 @@
             state.pos = p.pos;
             this.badge.applyPosition(state.pos);
           }
+          if (typeof p.chimeThresholdSec === 'number') {
+            state.chimeThresholdSec = p.chimeThresholdSec;
+          }
+          if (typeof p.urgentThresholdSec === 'number') {
+            state.urgentThresholdSec = p.urgentThresholdSec;
+          }
+          if (this.badge) {
+            this.badge.syncThresholdInputsAndLabels();
+          }
         }
       });
     }
@@ -1171,6 +1424,10 @@
       document.addEventListener(
         'keydown',
         (e) => {
+          // Ignore keystrokes inside our own floating badge Shadow DOM
+          if (this.badge && e.composedPath().includes(this.badge.host)) {
+            return;
+          }
           if (e.key === 'Enter' && !e.shiftKey) {
             const target = e.target;
             if (
@@ -1191,10 +1448,6 @@
       );
     }
 
-    /**
-     * Walks up from a timestamp node ("4:06 AM") to isolate its single message bubble
-     * without merging multiple messages together.
-     */
     getBubbleAndGroup(timeEl) {
       let curr = timeEl.parentElement;
       let bubble = curr;
@@ -1214,7 +1467,6 @@
         curr = curr.parentElement;
       }
 
-      // The sender group container is 1-2 levels above the bubble (contains "Joe" or "Ivan (Me)")
       const group = bubble?.parentElement?.parentElement || bubble?.parentElement || bubble;
       return { bubble, group };
     }
@@ -1226,7 +1478,6 @@
 
       const bodyText = (document.body ? document.body.innerText : '') || '';
 
-      // 1. Find all message bubbles anchored by timestamps (e.g. "4:06 AM")
       const timeRegex = /\b\d{1,2}:\d{2}\s*(?:[AP]M)?\b/i;
       const allTextNodes = document.querySelectorAll('span, div, p, time, small, em');
       const messageItems = [];
@@ -1237,7 +1488,6 @@
           const text = (el.textContent || '').trim();
           if (timeRegex.test(text) && text.length <= 12) {
             const rect = el.getBoundingClientRect();
-            // Ensure timestamp is inside the central chat view (not left sidebar)
             if (rect.left > 150 && rect.top > 60) {
               const { bubble, group } = this.getBubbleAndGroup(el);
               if (bubble && !seenBubbles.has(bubble)) {
@@ -1257,7 +1507,6 @@
       state.detectedMessagesCount = messageItems.length;
       if (messageItems.length === 0) return;
 
-      // 2. Check if "Visitor has ended the chat" appears after the last message
       if (bodyText.includes('has ended the chat') || bodyText.includes('chat has ended')) {
         const lastBubble = messageItems[messageItems.length - 1].bubble;
         const lastBubbleText = (lastBubble.innerText || '').trim();
@@ -1276,7 +1525,6 @@
         }
       }
 
-      // 3. Inspect messages from newest to oldest, ignoring "(System Message)"
       let lastSender = 'unknown';
       let lastText = '';
       let lastTimeStr = '';
@@ -1288,7 +1536,6 @@
         const groupText = (group ? group.innerText || '' : bubbleText).trim();
         const groupHTML = (group ? group.innerHTML || '' : '').toLowerCase();
 
-        // Skip automatic System Messages (e.g. "Customer Support (System Message)")
         if (
           groupText.includes('(System Message)') ||
           bubbleText.includes('(System Message)') ||
@@ -1297,7 +1544,6 @@
           continue;
         }
 
-        // Check if sent by Agent ("(Me)", right-aligned bubble, or agent class)
         const bubbleRect = bubble.getBoundingClientRect();
         const groupRect = group ? group.getBoundingClientRect() : bubbleRect;
         const isRightAligned =
@@ -1317,12 +1563,10 @@
           break;
         }
 
-        // Otherwise, it's a Visitor message
         if (bubbleText.length > 0) {
           lastSender = 'visitor';
           lastTimeStr = timeStr;
 
-          // Extract visitor name from group header (first line of groupText if short)
           const groupLines = groupText.split('\n').map((l) => l.trim()).filter(Boolean);
           if (groupLines.length > 1 && groupLines[0].length <= 25 && !groupLines[0].includes(':')) {
             visitorName = groupLines[0];
@@ -1336,7 +1580,6 @@
         }
       }
 
-      // 4. Update state based on the latest message in the chat
       if (lastSender === 'agent') {
         if (state.status !== 'idle' && state.status !== 'replied') {
           log('Last message in chat is from AGENT:', lastText);
@@ -1348,29 +1591,23 @@
         state.lastVisitorMsgText = lastText;
         state.lastVisitorTimeStr = lastTimeStr;
 
-        // If this exact message is ALREADY being tracked (e.g., before page refresh),
-        // keep its existing waitingSince timestamp so refreshing NEVER resets to 0!
         if (state.msgKey === currentMsgKey && state.waitingSince) {
           return;
         }
 
-        // Otherwise, compute waitingSince from the message's actual timestamp ("4:06 AM")
         const parsedMsgTimestamp = parseMessageTime(lastTimeStr);
         const now = Date.now();
         const isInitialPageLoad = now - SCRIPT_START_TIME < 6000;
 
         if (parsedMsgTimestamp && (now - parsedMsgTimestamp >= 60 * 1000 || isInitialPageLoad)) {
-          // Message timestamp is from an earlier minute or we just refreshed/loaded the page:
-          // Use the parsed message time (e.g., 4:06 AM)
           state.waitingSince = parsedMsgTimestamp;
         } else {
-          // Brand new message arrived live while watching: record exact millisecond
           state.waitingSince = now;
         }
 
         const initialElapsedSec = Math.floor((now - state.waitingSince) / 1000);
         state.msgKey = currentMsgKey;
-        state.chimeFired = initialElapsedSec >= CHIME_THRESHOLD_SEC;
+        state.chimeFired = initialElapsedSec >= state.chimeThresholdSec;
         state.urgentFired = false;
         state.silenced = false;
         state.status = 'waiting';
@@ -1409,9 +1646,6 @@
       }, 4000);
     }
 
-    /**
-     * Runs every 1 second in all tabs to update the badge countdown & sound alerts.
-     */
     startTimerTick() {
       clearInterval(this.tickInterval);
       this.tickInterval = setInterval(() => {
@@ -1425,10 +1659,10 @@
         const elapsedSec = Math.max(0, Math.floor((Date.now() - state.waitingSince) / 1000));
         const shouldPlayAudioHere = IS_TAWK_DASHBOARD || document.visibilityState === 'visible';
 
-        if (elapsedSec < CHIME_THRESHOLD_SEC) {
+        if (elapsedSec < state.chimeThresholdSec) {
           state.status = 'waiting';
           if (this.badge) this.badge.updateStatus('waiting', elapsedSec, state.lastVisitorMsgText);
-        } else if (elapsedSec >= CHIME_THRESHOLD_SEC && elapsedSec < URGENT_THRESHOLD_SEC) {
+        } else if (elapsedSec >= state.chimeThresholdSec && elapsedSec < state.urgentThresholdSec) {
           state.status = 'warning';
           if (this.badge) this.badge.updateStatus('warning', elapsedSec, state.lastVisitorMsgText);
 
@@ -1437,7 +1671,7 @@
             saveSharedState();
             audio.playChime();
           }
-        } else if (elapsedSec >= URGENT_THRESHOLD_SEC) {
+        } else if (elapsedSec >= state.urgentThresholdSec) {
           state.status = 'urgent';
           if (this.badge) this.badge.updateStatus('urgent', elapsedSec, state.lastVisitorMsgText);
 
@@ -1459,7 +1693,6 @@
     const controller = new TawkController(badgeUI);
     controller.start();
   } else if (IS_TAWK_DASHBOARD) {
-    // Subframe inside dashboard.tawk.to
     const subController = new TawkController(null);
     subController.start();
   }

@@ -8,8 +8,9 @@ A lightweight Chrome Extension (Manifest V3) that monitors the [Tawk.to Agent Da
 
 - **Accurate Waiting Timer**: Automatically detects the incoming visitor's message and parses the actual timestamp (e.g., `4:06 AM`).
 - **Refresh & Navigation Resilient**: Persists active countdowns in `chrome.storage.local`—refreshing the dashboard or navigating between dashboard tabs does not reset the timer to zero.
-- **2-Minute Chime Alert**: Plays a gentle 3-tone harmonic chime (`E5` → `A5` → `E6`) when a visitor has been waiting for 2 minutes.
-- **3-Minute Looping Urgent Alarm**: Sounds a distinct, rhythmic siren every 1.8 seconds once waiting time reaches 3 minutes until an agent replies or clicks **Silence**.
+- **1:45 Pre-Alarm Chime (Customizable)**: Plays a gentle 3-tone harmonic chime (`E5` → `A5` → `E6`) 15 seconds before the 2-minute mark (`1:45` by default).
+- **3:00 Max Looping Urgent Alarm (Customizable)**: Sounds a distinct, rhythmic siren every 1.8 seconds once waiting time reaches `3:00` (by default) until an agent replies or clicks **Silence**.
+- **In-Modal Alarm Settings (`⚙️`)**: Customize both the **1st Pre-Alarm** and **Max Urgent Alarm** thresholds (`Min` and `Sec`) directly inside the floating modal box, persisted in `chrome.storage.local`.
 - **Agent Reply Detection**: Automatically resets the timer when the agent sends a reply (presses `Enter` in chat, clicks `Reply`, or an agent message bubble appears).
 - **Draggable Floating Badge**: Click and drag the badge anywhere on screen; your custom position is saved across reloads.
 - **Always-on-Top Pop-Out (`📌`)**: Use Chrome's Document Picture-in-Picture to pop the badge out into a floating OS-level mini-window that stays visible on top of all desktop apps.
