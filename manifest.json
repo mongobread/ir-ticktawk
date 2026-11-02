@@ -2,7 +2,12 @@
   "manifest_version": 3,
   "name": "IR TickTawk - Tawk.to Response Monitor",
   "version": "1.2.0",
-  "description": "Monitors dashboard.tawk.to chats with a draggable floating timer, customizable pre-alarm (1:45) & urgent alarm (3:00), and Web Audio alerts.",
+  "description": "Monitors dashboard.tawk.to chats with a draggable timer, customizable pre-alarm (1:45) & urgent alarm (3:00), and sound alerts.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "permissions": [
     "storage"
   ],
