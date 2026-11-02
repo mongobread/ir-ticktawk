@@ -1,11 +1,16 @@
-# Privacy Policy — IR TickTawk
+# Privacy Policy for IR-TickTawk
 
-**Last Updated:** November 3, 2026
+**Effective Date:** November 2026
 
-**IR TickTawk - Tawk.to Response Monitor** does not collect, store, transmit, or share any personal information, chat content, or browsing data with any external servers or third parties.
+IR-TickTawk does not collect, track, or share any personal data.
 
-## Local Storage Only
-All user preferences (such as custom alarm thresholds, audio mute state, badge position, and active countdown state) are stored strictly locally on your device using Chrome's local storage (`chrome.storage.local`).
+### 1. Data Collection & Processing
+- **Zero Data Collection:** IR-TickTawk does not collect, record, transmit, or store any personally identifiable information, chat content, or browsing history.
+- **Local Operation:** All chat detection and response timers run entirely in the browser's local memory on `dashboard.tawk.to`. No information is sent to external servers or third parties.
 
-## Contact
-If you have any questions about this privacy policy, please open an issue at [https://github.com/mongobread/ir-ticktawk/issues](https://github.com/mongobread/ir-ticktawk/issues).
+### 2. Permissions
+- **Host Permission (`https://dashboard.tawk.to/*`):** Used solely to observe active chat response times on the agent dashboard.
+- **Storage:** Used only to save your local timer duration preferences on your device.
+
+### 3. Contact
+For questions regarding this policy, contact the developer at: mongobread@gmail.com
