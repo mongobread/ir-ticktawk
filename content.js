@@ -1,12 +1,10 @@
 /**
- * IR TickTawk - Chrome Extension Content Script (v1.3.1)
- * - Ignores chats where the agent hasn't joined (shows "Join Chat") or hasn't answered yet
- * - Only tracks active ongoing chats where the logged-in agent "(Me)" has participated
- * - 3-Chat Timebomb Stack ordered by deadline with « and » navigation arrows
- * - Clickable Urgent card & stacked timebomb rows that jump directly to that visitor's chat
- * - Default 1st Pre-Alarm Chime at 1:45 (105s) and Max Urgent Looping Alarm at 3:00 (180s)
- * - In-modal customizable alarm thresholds (Min & Sec)
- * - Strictly ignores internal Agent DMs, Group Chats, and old history (>15m)
+ * IR TickTawk - Chrome Extension Content Script (v1.3.2)
+ * - Detects unsent Live Translate previews ("The customer will see...") & verifies input cleared before resetting
+ * - Background-tab-safe scanning (setTimeout + interval scan instead of paused requestAnimationFrame)
+ * - Exact arrival timestamp retention (eliminates same-minute :00 backdating cliff)
+ * - Ignores chats where the agent hasn't joined ("Join Chat") or hasn't answered yet
+ * - 3-Chat Timebomb Stack ordered by deadline with « and » navigation arrows & click-to-jump
  */
 
 (() => {
@@ -21,8 +19,8 @@
     return;
   }
 
-  if (window.__IR_TICKTAWK_V131__) return;
-  window.__IR_TICKTAWK_V131__ = true;
+  if (window.__IR_TICKTAWK_V132__) return;
+  window.__IR_TICKTAWK_V132__ = true;
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -288,6 +286,7 @@
     chats: [], // Array of { id, visitorName, msgText, timeStr, msgKey, waitingSince, chimeFired, urgentFired, silenced, chatUrlHash }
     selectedIndex: 0,
     transientStatus: null, // 'replied' | 'ended' | null
+    hasUnsentTranslation: false,
     detectedMessagesCount: 0,
     isMinimized: false,
     isMuted: false,
@@ -295,6 +294,11 @@
     chimeThresholdSec: DEFAULT_CHIME_SEC,
     urgentThresholdSec: DEFAULT_URGENT_SEC
   };
+
+  // Retains exact arrival timestamps for messages seen in this session so re-scans never backdate to :00
+  const firstSeenMsgTimestamps = new Map();
+  const lastAgentReplyTimestamps = new Map();
+  const lastSeenAgentMsgKeys = new Map();
 
   const audio = new AudioManager();
 
@@ -359,7 +363,7 @@
     chrome.storage.local
       .set({
         [STORAGE_STATE_KEY]: {
-          schemaVersion: 4,
+          schemaVersion: 5,
           chats: state.chats,
           selectedIndex: state.selectedIndex,
           detectedMessagesCount: state.detectedMessagesCount,
@@ -393,17 +397,22 @@
       chrome.storage.local.get([STORAGE_STATE_KEY, STORAGE_PREFS_KEY], (res) => {
         if (res && res[STORAGE_STATE_KEY]) {
           const s = res[STORAGE_STATE_KEY];
-          if (s.schemaVersion === 4 && Array.isArray(s.chats)) {
+          if (s.schemaVersion === 5 && Array.isArray(s.chats)) {
             // Filter out any stale chats older than 30 minutes
             const now = Date.now();
             state.chats = s.chats.filter(
               (c) => c && c.waitingSince && now - c.waitingSince < 30 * 60 * 1000
             );
+            for (const c of state.chats) {
+              if (c.msgKey && c.waitingSince) {
+                firstSeenMsgTimestamps.set(c.msgKey, c.waitingSince);
+              }
+            }
             state.selectedIndex = s.selectedIndex || 0;
             state.detectedMessagesCount = s.detectedMessagesCount || 0;
             sortChatsByDeadline();
           } else {
-            // Purge old schema state (e.g. stale unjoined 218.20.34.220 entry)
+            // Purge old schema state
             state.chats = [];
             saveSharedState();
           }
@@ -1629,13 +1638,21 @@
         this.elements.dot.className = `tt-status-dot ${status}`;
         this.elements.badgeTag.className = `tt-status-badge ${status}`;
 
-        if (status === 'replied') {
+        if (state.hasUnsentTranslation) {
+          this.elements.badgeTag.textContent = 'Unsent!';
+          this.elements.badgeTag.className = 'tt-status-badge warning';
+          this.elements.desc.style.color = '#fde68a';
+          this.elements.desc.textContent = '⚠️ Unsent translation in box — press Enter again!';
+        } else if (status === 'replied') {
+          this.elements.desc.style.color = '';
           this.elements.badgeTag.textContent = 'Replied';
           this.elements.desc.textContent = 'Agent replied! Timer cleared.';
         } else if (status === 'ended') {
+          this.elements.desc.style.color = '';
           this.elements.badgeTag.textContent = 'Ended';
           this.elements.desc.textContent = 'Visitor ended chat.';
         } else {
+          this.elements.desc.style.color = '';
           this.elements.badgeTag.textContent = 'Idle';
           this.elements.desc.textContent = `Pre-alarm ${chimeStr} · Max ${urgentStr} (${state.detectedMessagesCount} msgs)`;
         }
@@ -1680,6 +1697,13 @@
       } else {
         this.elements.badgeTag.textContent = 'WAITING';
         this.elements.desc.textContent = `${selectedChat.visitorName}${timeSuffix}: "${selectedChat.msgText}"`;
+      }
+
+      if (state.hasUnsentTranslation) {
+        this.elements.desc.style.color = '#fde68a';
+        this.elements.desc.textContent = '⚠️ Unsent translation in box — press Enter again!';
+      } else {
+        this.elements.desc.style.color = '';
       }
 
       // Show Silence button if any chat is ringing urgent alarm
@@ -1806,8 +1830,13 @@
 
         if (changes[STORAGE_STATE_KEY] && changes[STORAGE_STATE_KEY].newValue) {
           const s = changes[STORAGE_STATE_KEY].newValue;
-          if (s.schemaVersion === 4 && Array.isArray(s.chats)) {
+          if (s.schemaVersion === 5 && Array.isArray(s.chats)) {
             state.chats = s.chats;
+            for (const c of state.chats) {
+              if (c.msgKey && c.waitingSince && !firstSeenMsgTimestamps.has(c.msgKey)) {
+                firstSeenMsgTimestamps.set(c.msgKey, c.waitingSince);
+              }
+            }
             state.selectedIndex = s.selectedIndex || 0;
             state.detectedMessagesCount = s.detectedMessagesCount || 0;
             sortChatsByDeadline();
@@ -1857,10 +1886,11 @@
       this.observer = new MutationObserver(() => {
         if (!this.scanScheduled) {
           this.scanScheduled = true;
-          requestAnimationFrame(() => {
+          // Use setTimeout instead of requestAnimationFrame so scans continue running in background tabs!
+          setTimeout(() => {
             this.scanScheduled = false;
             this.scan();
-          });
+          }, 120);
         }
       });
 
@@ -1868,6 +1898,12 @@
         childList: true,
         subtree: true,
         characterData: true
+      });
+
+      document.addEventListener('visibilitychange', () => {
+        if (IS_TAWK_DASHBOARD) {
+          this.scan();
+        }
       });
     }
 
@@ -1960,6 +1996,24 @@
       return null;
     }
 
+    /**
+     * Detects when Tawk.to Live Translate is holding an unsent message preview
+     * ("The customer will see (Language) ...") inside the reply composer.
+     */
+    hasUnsentTranslationPreview(bodyText) {
+      const text = bodyText || (document.body ? document.body.innerText : '') || '';
+      if (!text.includes('The customer will see')) return false;
+      const inputs = document.querySelectorAll('textarea, [contenteditable="true"]');
+      for (const inp of inputs) {
+        const r = inp.getBoundingClientRect();
+        if (r.width > 100 && r.height > 15) {
+          const val = (inp.value || inp.innerText || '').trim();
+          if (val.length > 0) return true;
+        }
+      }
+      return true;
+    }
+
     bindAgentInteractions() {
       document.addEventListener(
         'keydown',
@@ -1984,8 +2038,22 @@
                   this.getActiveChatHeaderVisitorName() ||
                   (state.chats[state.selectedIndex] &&
                     state.chats[state.selectedIndex].visitorName);
-                log('Agent pressed Enter to reply to:', activeVisitor || 'active chat');
-                this.onAgentReplied(activeVisitor);
+                // Wait 220ms to verify Tawk.to actually sent and cleared the input box
+                // (in Live Translate mode, the 1st Enter only previews translation without sending!)
+                setTimeout(() => {
+                  const remaining = (target.value || target.innerText || '').trim();
+                  if (remaining.length === 0 && !this.hasUnsentTranslationPreview()) {
+                    log('Verified agent reply sent for:', activeVisitor || 'active chat');
+                    if (activeVisitor) {
+                      lastAgentReplyTimestamps.set(activeVisitor, Date.now());
+                    }
+                    state.hasUnsentTranslation = false;
+                    this.onAgentReplied(activeVisitor);
+                  } else {
+                    log('Input still holds unsent text / translation preview; keeping timer active.');
+                    this.scan();
+                  }
+                }, 220);
               }
             }
           }
@@ -2026,8 +2094,12 @@
 
       if (!this.isVisitorChatContext(bodyText)) {
         state.detectedMessagesCount = 0;
+        state.hasUnsentTranslation = false;
         return;
       }
+
+      const prevUnsent = state.hasUnsentTranslation;
+      state.hasUnsentTranslation = this.hasUnsentTranslationPreview(bodyText);
 
       const timeRegex = /\b\d{1,2}:\d{2}\s*[AP]M\b/i;
       const allTextNodes = document.querySelectorAll('span, div, p, time, small, em');
@@ -2101,6 +2173,24 @@
         }
       }
 
+      let lastMyAgentTimeStr = '';
+      for (let i = messageItems.length - 1; i >= 0; i--) {
+        const it = messageItems[i];
+        const bTxt = (it.bubble ? it.bubble.innerText || '' : '').trim();
+        const gTxt = (it.group ? it.group.innerText || '' : bTxt).trim();
+        const gHtml = (it.group ? it.group.innerHTML || '' : '').toLowerCase();
+        if (
+          /\(\s*me\s*\)/i.test(gTxt) ||
+          /\(\s*me\s*\)/i.test(bTxt) ||
+          /\(\s*me\s*\)/i.test(gHtml) ||
+          gHtml.includes('tawk-agent-me') ||
+          gHtml.includes('is-self')
+        ) {
+          lastMyAgentTimeStr = it.timeStr || '';
+          break;
+        }
+      }
+
       let lastSender = 'unknown';
       let lastText = '';
       let lastTimeStr = '';
@@ -2166,9 +2256,16 @@
       }
 
       if (lastSender === 'agent') {
+        const agentMsgKey = `${visitorName}|${lastTimeStr}|${lastText}`;
+        if (visitorName && lastSeenAgentMsgKeys.get(visitorName) !== agentMsgKey) {
+          lastSeenAgentMsgKeys.set(visitorName, agentMsgKey);
+          lastAgentReplyTimestamps.set(visitorName, Date.now());
+        }
         if (visitorName && removeChatById(visitorName)) {
           log('Agent replied to:', visitorName);
           this.onAgentReplied(visitorName);
+        } else if (prevUnsent !== state.hasUnsentTranslation && this.badge) {
+          this.badge.renderQueue();
         }
       } else if (lastSender === 'visitor') {
         const parsedMsgTimestamp = parseMessageTime(lastTimeStr);
@@ -2181,11 +2278,24 @@
 
         const currentMsgKey = `${visitorName}|${lastTimeStr}|${lastText}`;
         const isInitialPageLoad = now - SCRIPT_START_TIME < 6000;
+        const sameMinuteAsMyReply =
+          Boolean(lastMyAgentTimeStr) &&
+          lastMyAgentTimeStr.trim().toLowerCase() === (lastTimeStr || '').trim().toLowerCase();
 
         let waitingSince = now;
-        if (parsedMsgTimestamp && (now - parsedMsgTimestamp >= 60 * 1000 || isInitialPageLoad)) {
-          waitingSince = parsedMsgTimestamp;
+        if (firstSeenMsgTimestamps.has(currentMsgKey)) {
+          waitingSince = firstSeenMsgTimestamps.get(currentMsgKey);
+        } else if (
+          parsedMsgTimestamp &&
+          !sameMinuteAsMyReply &&
+          (now - parsedMsgTimestamp >= 90 * 1000 || isInitialPageLoad)
+        ) {
+          // Use :30s midpoint (clamped <= now) so minute-only timestamps never steal up to 59 phantom seconds
+          const midMinuteTs = Math.min(now, parsedMsgTimestamp + 30 * 1000);
+          const lastReplyAt = lastAgentReplyTimestamps.get(visitorName) || 0;
+          waitingSince = Math.max(midMinuteTs, lastReplyAt);
         }
+        firstSeenMsgTimestamps.set(currentMsgKey, waitingSince);
 
         const initialElapsedSec = Math.floor((now - waitingSince) / 1000);
         const changed = upsertChat({
@@ -2205,6 +2315,8 @@
           state.transientStatus = null;
           saveSharedState();
           if (this.badge) this.badge.renderQueue();
+        } else if (prevUnsent !== state.hasUnsentTranslation && this.badge) {
+          this.badge.renderQueue();
         }
       }
     }
@@ -2234,7 +2346,14 @@
 
     startTimerTick() {
       clearInterval(this.tickInterval);
+      this.tickCount = 0;
       this.tickInterval = setInterval(() => {
+        this.tickCount = (this.tickCount + 1) % 1000000;
+        // Scan periodically even when dashboard.tawk.to is in a background tab
+        if (IS_TAWK_DASHBOARD && this.tickCount % 2 === 0) {
+          this.scan();
+        }
+
         if (state.chats.length === 0) {
           if (this.badge) this.badge.renderQueue();
           return;
