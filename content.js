@@ -1,5 +1,7 @@
 /**
- * IR TickTawk - Chrome Extension Content Script (v1.3.0)
+ * IR TickTawk - Chrome Extension Content Script (v1.3.1)
+ * - Ignores chats where the agent hasn't joined (shows "Join Chat") or hasn't answered yet
+ * - Only tracks active ongoing chats where the logged-in agent "(Me)" has participated
  * - 3-Chat Timebomb Stack ordered by deadline with « and » navigation arrows
  * - Clickable Urgent card & stacked timebomb rows that jump directly to that visitor's chat
  * - Default 1st Pre-Alarm Chime at 1:45 (105s) and Max Urgent Looping Alarm at 3:00 (180s)
@@ -19,8 +21,8 @@
     return;
   }
 
-  if (window.__IR_TICKTAWK_V130__) return;
-  window.__IR_TICKTAWK_V130__ = true;
+  if (window.__IR_TICKTAWK_V131__) return;
+  window.__IR_TICKTAWK_V131__ = true;
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -328,8 +330,14 @@
   }
 
   function removeChatById(id) {
+    if (!id) return false;
+    const target = String(id).trim().toLowerCase();
     const beforeLen = state.chats.length;
-    state.chats = state.chats.filter((c) => c.id !== id);
+    state.chats = state.chats.filter((c) => {
+      const cId = String(c.id || '').trim().toLowerCase();
+      const cName = String(c.visitorName || '').trim().toLowerCase();
+      return cId !== target && cName !== target;
+    });
     sortChatsByDeadline();
     if (state.chats.length === 0) {
       audio.stopUrgentAlarm();
@@ -351,7 +359,7 @@
     chrome.storage.local
       .set({
         [STORAGE_STATE_KEY]: {
-          schemaVersion: 3,
+          schemaVersion: 4,
           chats: state.chats,
           selectedIndex: state.selectedIndex,
           detectedMessagesCount: state.detectedMessagesCount,
@@ -385,7 +393,7 @@
       chrome.storage.local.get([STORAGE_STATE_KEY, STORAGE_PREFS_KEY], (res) => {
         if (res && res[STORAGE_STATE_KEY]) {
           const s = res[STORAGE_STATE_KEY];
-          if (s.schemaVersion === 3 && Array.isArray(s.chats)) {
+          if (s.schemaVersion === 4 && Array.isArray(s.chats)) {
             // Filter out any stale chats older than 30 minutes
             const now = Date.now();
             state.chats = s.chats.filter(
@@ -395,7 +403,7 @@
             state.detectedMessagesCount = s.detectedMessagesCount || 0;
             sortChatsByDeadline();
           } else {
-            // Purge old schema state (e.g. stale 321:03 entry)
+            // Purge old schema state (e.g. stale unjoined 218.20.34.220 entry)
             state.chats = [];
             saveSharedState();
           }
@@ -1798,7 +1806,7 @@
 
         if (changes[STORAGE_STATE_KEY] && changes[STORAGE_STATE_KEY].newValue) {
           const s = changes[STORAGE_STATE_KEY].newValue;
-          if (s.schemaVersion === 3 && Array.isArray(s.chats)) {
+          if (s.schemaVersion === 4 && Array.isArray(s.chats)) {
             state.chats = s.chats;
             state.selectedIndex = s.selectedIndex || 0;
             state.detectedMessagesCount = s.detectedMessagesCount || 0;
@@ -1886,6 +1894,51 @@
         text.includes('ORGANIZATION') && text.includes('DEALS');
 
       return Boolean(hasWhisperOrSmartReply || hasActiveVisitorsBar || hasVisitorDetailsPanel);
+    }
+
+    hasJoinChatButton() {
+      const elements = document.querySelectorAll(
+        'button, [role="button"], a, input[type="button"], input[type="submit"], [class*="btn"], [class*="button"]'
+      );
+      for (const el of elements) {
+        const text = (el.textContent || '').trim().toLowerCase();
+        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+        const title = (el.getAttribute('title') || '').toLowerCase();
+        if (
+          text === 'join chat' ||
+          text.includes('join chat') ||
+          aria.includes('join chat') ||
+          title.includes('join chat')
+        ) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 20 && rect.height > 10) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    hasMyAgentMessage(messageItems) {
+      if (!Array.isArray(messageItems) || messageItems.length === 0) return false;
+      for (const item of messageItems) {
+        const bubble = item.bubble;
+        const group = item.group;
+        const bubbleText = (bubble ? bubble.innerText || '' : '').trim();
+        const groupText = (group ? group.innerText || '' : bubbleText).trim();
+        const groupHTML = (group ? group.innerHTML || '' : '').toLowerCase();
+
+        if (
+          /\(\s*me\s*\)/i.test(groupText) ||
+          /\(\s*me\s*\)/i.test(bubbleText) ||
+          /\(\s*me\s*\)/i.test(groupHTML) ||
+          groupHTML.includes('tawk-agent-me') ||
+          groupHTML.includes('is-self')
+        ) {
+          return true;
+        }
+      }
+      return false;
     }
 
     /**
@@ -2006,6 +2059,31 @@
       if (messageItems.length === 0) return;
 
       const headerVisitorName = this.getActiveChatHeaderVisitorName();
+
+      // Guard: Ignore chats where the agent hasn't joined (has "Join Chat" button)
+      // or hasn't answered yet (no message from "(Me)" in the conversation history).
+      // Also immediately remove from queue if previously tracked.
+      if (this.hasJoinChatButton() || !this.hasMyAgentMessage(messageItems)) {
+        let removed = false;
+        if (headerVisitorName && removeChatById(headerVisitorName)) {
+          removed = true;
+        }
+        for (const c of [...state.chats]) {
+          if (
+            (c.visitorName && bodyText.includes(c.visitorName)) ||
+            (c.msgText && c.msgText.length > 5 && bodyText.includes(c.msgText))
+          ) {
+            if (removeChatById(c.id)) {
+              removed = true;
+            }
+          }
+        }
+        if (removed) {
+          saveSharedState();
+          if (this.badge) this.badge.renderQueue();
+        }
+        return;
+      }
 
       if (bodyText.includes('has ended the chat') || bodyText.includes('chat has ended')) {
         const lastBubble = messageItems[messageItems.length - 1].bubble;
