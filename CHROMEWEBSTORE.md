@@ -1,6 +1,6 @@
 # Chrome Web Store Listing — IR TickTawk - Tawk.to Response Monitor
 
-> Last Updated: 2026-11-03
+> Last Updated: 2026-11-04
 
 ## Store Listing
 
@@ -89,7 +89,8 @@ https://github.com/mongobread/ir-ticktawk/blob/main/PRIVACY.md
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 1.3.2 | 2026-11-03 | Detect unsent Live Translate previews ("The customer will see...") before resetting timer, fix background tab scanning, and eliminate same-minute :00 backdating. | Ready to Submit |
+| 1.3.3 | 2026-11-04 | Automatically clear timer when a visitor is banned or chat ends/closes (detects removed reply composer, ban/end actions, and full IPv6 visitor headers). | Ready to Submit |
+| 1.3.2 | 2026-11-03 | Detect unsent Live Translate previews ("The customer will see...") before resetting timer, fix background tab scanning, and eliminate same-minute :00 backdating. | Archived |
 | 1.3.1 | 2026-11-03 | Ignore unjoined chats (with "Join Chat" button) and chats without agent replies; only track active ongoing chats where the agent has responded. | Archived |
 | 1.3.0 | 2026-11-03 | Added 3-chat timebomb stack, « and » carousel navigation, and click-to-jump to visitor chat. | Archived |
 | 1.2.1 | 2026-11-03 | Fixed bug where internal Agent DMs and Group Chats were scanned as visitor chats. | Draft |
