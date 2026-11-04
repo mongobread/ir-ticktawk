@@ -1,5 +1,6 @@
 /**
- * IR TickTawk - Chrome Extension Content Script (v1.3.3)
+ * IR TickTawk - Chrome Extension Content Script (v1.3.4)
+ * - Displays dynamic manifest version footer crumb at the bottom of the floating badge
  * - Clears timer immediately when a chat ends, closes, or visitor is banned (composer removed / ban action)
  * - Detects unsent Live Translate previews ("The customer will see...") & verifies input cleared before resetting
  * - Background-tab-safe scanning (setTimeout + interval scan instead of paused requestAnimationFrame)
@@ -15,13 +16,17 @@
   const IS_TAWK_DASHBOARD = window.location.hostname === 'dashboard.tawk.to';
   const SCRIPT_START_TIME = Date.now();
   const LOG_PREFIX = '[IR TickTawk]';
+  const EXT_VERSION =
+    typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getManifest
+      ? chrome.runtime.getManifest().version
+      : '1.3.4';
 
   if (!IS_TAWK_DASHBOARD) {
     return;
   }
 
-  if (window.__IR_TICKTAWK_V133__) return;
-  window.__IR_TICKTAWK_V133__ = true;
+  if (window.__IR_TICKTAWK_V134__) return;
+  window.__IR_TICKTAWK_V134__ = true;
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -634,6 +639,10 @@
               <button class="tt-action-btn" id="tt-btn-reset" title="Clear all timers">Clear All</button>
             </div>
             <div class="tt-audio-status locked" id="tt-audio-status">⚠️ Click to Unlock Audio Alerts</div>
+            <div class="tt-footer-crumb">
+              <span>IR TickTawk</span>
+              <span class="tt-footer-ver">v${EXT_VERSION}</span>
+            </div>
           </div>
         </div>
       `;
@@ -707,7 +716,7 @@
           border: 1.5px solid rgba(255, 255, 255, 0.18);
           border-radius: 14px;
           box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 1px 1px rgba(255, 255, 255, 0.1);
-          padding: 12px 15px;
+          padding: 12px 15px 8px;
           min-width: 300px;
           max-width: 360px;
           cursor: grab;
@@ -1135,6 +1144,22 @@
           color: #fde68a;
           border: 1px solid rgba(245, 158, 11, 0.5);
           animation: tt-pulse 1.2s infinite;
+        }
+        .tt-footer-crumb {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-top: 1px;
+          padding: 0 2px;
+          font-size: 9.5px;
+          line-height: 1.1;
+          color: rgba(255, 255, 255, 0.34);
+          letter-spacing: 0.3px;
+        }
+        .tt-footer-ver {
+          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          font-weight: 600;
+          color: rgba(255, 255, 255, 0.42);
         }
       `;
     }
