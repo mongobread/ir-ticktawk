@@ -1,5 +1,6 @@
 /**
- * IR TickTawk - Chrome Extension Content Script (v1.3.2)
+ * IR TickTawk - Chrome Extension Content Script (v1.3.3)
+ * - Clears timer immediately when a chat ends, closes, or visitor is banned (composer removed / ban action)
  * - Detects unsent Live Translate previews ("The customer will see...") & verifies input cleared before resetting
  * - Background-tab-safe scanning (setTimeout + interval scan instead of paused requestAnimationFrame)
  * - Exact arrival timestamp retention (eliminates same-minute :00 backdating cliff)
@@ -19,8 +20,8 @@
     return;
   }
 
-  if (window.__IR_TICKTAWK_V132__) return;
-  window.__IR_TICKTAWK_V132__ = true;
+  if (window.__IR_TICKTAWK_V133__) return;
+  window.__IR_TICKTAWK_V133__ = true;
 
   function log(...args) {
     console.log(LOG_PREFIX, ...args);
@@ -363,7 +364,7 @@
     chrome.storage.local
       .set({
         [STORAGE_STATE_KEY]: {
-          schemaVersion: 5,
+          schemaVersion: 6,
           chats: state.chats,
           selectedIndex: state.selectedIndex,
           detectedMessagesCount: state.detectedMessagesCount,
@@ -397,7 +398,7 @@
       chrome.storage.local.get([STORAGE_STATE_KEY, STORAGE_PREFS_KEY], (res) => {
         if (res && res[STORAGE_STATE_KEY]) {
           const s = res[STORAGE_STATE_KEY];
-          if (s.schemaVersion === 5 && Array.isArray(s.chats)) {
+          if (s.schemaVersion === 6 && Array.isArray(s.chats)) {
             // Filter out any stale chats older than 30 minutes
             const now = Date.now();
             state.chats = s.chats.filter(
@@ -1650,7 +1651,7 @@
         } else if (status === 'ended') {
           this.elements.desc.style.color = '';
           this.elements.badgeTag.textContent = 'Ended';
-          this.elements.desc.textContent = 'Visitor ended chat.';
+          this.elements.desc.textContent = 'Chat ended / closed — timer cleared.';
         } else {
           this.elements.desc.style.color = '';
           this.elements.badgeTag.textContent = 'Idle';
@@ -1830,7 +1831,7 @@
 
         if (changes[STORAGE_STATE_KEY] && changes[STORAGE_STATE_KEY].newValue) {
           const s = changes[STORAGE_STATE_KEY].newValue;
-          if (s.schemaVersion === 5 && Array.isArray(s.chats)) {
+          if (s.schemaVersion === 6 && Array.isArray(s.chats)) {
             state.chats = s.chats;
             for (const c of state.chats) {
               if (c.msgKey && c.waitingSince && !firstSeenMsgTimestamps.has(c.msgKey)) {
@@ -1928,8 +1929,11 @@
         /Active\s*\(\d+\)/.test(text) && text.includes('Visitors');
       const hasVisitorDetailsPanel =
         text.includes('ORGANIZATION') && text.includes('DEALS');
+      const hasOpenChatHeader = Boolean(this.getActiveChatHeaderVisitorName());
 
-      return Boolean(hasWhisperOrSmartReply || hasActiveVisitorsBar || hasVisitorDetailsPanel);
+      return Boolean(
+        hasWhisperOrSmartReply || hasActiveVisitorsBar || hasVisitorDetailsPanel || hasOpenChatHeader
+      );
     }
 
     hasJoinChatButton() {
@@ -1978,14 +1982,15 @@
     }
 
     /**
-     * Extracts the active visitor's name from the top chat panel header (e.g. "Joe - ivantawkdev" -> "Joe").
+     * Extracts the active visitor's name from the top chat panel header
+     * (e.g. "Joe - ivantawkdev" -> "Joe", or IPv6 "2804:7300:... - tawk.to" -> "2804:7300:...").
      */
     getActiveChatHeaderVisitorName() {
       const candidates = document.querySelectorAll('h1, h2, h3, h4, span, div');
       for (const el of candidates) {
         if (el.children.length === 0) {
           const text = (el.textContent || '').trim();
-          if (text.includes(' - ') && text.length < 50) {
+          if (text.includes(' - ') && text.length < 100) {
             const r = el.getBoundingClientRect();
             if (r.left > 150 && r.top > 40 && r.top < 140) {
               return text.split(' - ')[0].trim();
@@ -1994,6 +1999,87 @@
         }
       }
       return null;
+    }
+
+    /**
+     * Checks whether the currently open visitor chat actually has an active reply composer.
+     * When a visitor is banned or a chat is closed/ended, Tawk.to removes the Reply/Whisper
+     * composer bar and textarea so the agent can no longer reply.
+     */
+    hasActiveReplyComposer() {
+      const minBottom = Math.min(240, window.innerHeight * 0.4);
+
+      // 1. Check for an active multiline chat input (textarea / contenteditable / textbox)
+      const inputs = document.querySelectorAll(
+        'textarea, [contenteditable="true"], [role="textbox"]'
+      );
+      for (const el of inputs) {
+        if (this.badge && this.badge.host && this.badge.host.contains(el)) continue;
+        const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        if (placeholder.includes('search') || ariaLabel.includes('search')) continue;
+
+        const r = el.getBoundingClientRect();
+        if (r.width > 100 && r.height >= 14 && r.bottom > minBottom && r.top < window.innerHeight) {
+          return true;
+        }
+      }
+
+      // 2. Check for collapsed composer bar having both "Reply" and "Whisper" controls
+      let hasReplyBtn = false;
+      let hasWhisperBtn = false;
+      const controls = document.querySelectorAll(
+        'button, [role="button"], [role="tab"], a, span, div'
+      );
+      for (const el of controls) {
+        if (el.children.length > 2) continue;
+        const txt = (el.textContent || '').trim().toLowerCase();
+        if (txt === 'reply' || txt === 'whisper') {
+          const r = el.getBoundingClientRect();
+          if (r.width > 20 && r.height >= 12 && r.bottom > minBottom && r.top < window.innerHeight) {
+            if (txt === 'reply') hasReplyBtn = true;
+            if (txt === 'whisper') hasWhisperBtn = true;
+            if (hasReplyBtn && hasWhisperBtn) return true;
+          }
+        }
+      }
+
+      return false;
+    }
+
+    /**
+     * Removes an ended, closed, or banned chat from the queue and flashes the Ended status.
+     */
+    clearEndedOrBannedChat(headerVisitorName, bodyText = '') {
+      let removed = false;
+      if (headerVisitorName && removeChatById(headerVisitorName)) {
+        removed = true;
+      }
+      if (bodyText) {
+        for (const c of [...state.chats]) {
+          if (
+            (c.visitorName && bodyText.includes(c.visitorName)) ||
+            (c.msgText && c.msgText.length > 5 && bodyText.includes(c.msgText))
+          ) {
+            if (removeChatById(c.id)) {
+              removed = true;
+            }
+          }
+        }
+      }
+      if (removed) {
+        log('Cleared ended/banned chat from queue:', headerVisitorName || 'chat');
+        state.transientStatus = 'ended';
+        saveSharedState();
+        if (this.badge) this.badge.renderQueue();
+        setTimeout(() => {
+          if (state.transientStatus === 'ended') {
+            state.transientStatus = null;
+            if (this.badge) this.badge.renderQueue();
+          }
+        }, 3500);
+      }
+      return removed;
     }
 
     /**
@@ -2055,6 +2141,48 @@
                   }
                 }, 220);
               }
+            }
+          }
+        },
+        true
+      );
+
+      // Detect clicks on Ban / End Chat / Leave Chat confirmation buttons in Tawk.to
+      const closeActionLabels = new Set([
+        'ban',
+        'ban visitor',
+        'ban ip',
+        'end',
+        'end chat',
+        'end conversation',
+        'leave',
+        'leave chat',
+        'leave conversation',
+        'close chat'
+      ]);
+      document.addEventListener(
+        'click',
+        (e) => {
+          if (this.badge && e.composedPath().includes(this.badge.host)) {
+            return;
+          }
+          const btn =
+            e.target && e.target.closest
+              ? e.target.closest('button, [role="button"], [role="menuitem"], a')
+              : null;
+          if (!btn) return;
+          const label = (btn.textContent || '').trim().toLowerCase();
+          if (closeActionLabels.has(label)) {
+            const targetVisitor = this.getActiveChatHeaderVisitorName();
+            if (targetVisitor) {
+              setTimeout(() => {
+                if (
+                  !this.hasActiveReplyComposer() ||
+                  this.getActiveChatHeaderVisitorName() !== targetVisitor
+                ) {
+                  this.clearEndedOrBannedChat(targetVisitor);
+                }
+              }, 350);
             }
           }
         },
@@ -2157,18 +2285,35 @@
         return;
       }
 
-      if (bodyText.includes('has ended the chat') || bodyText.includes('chat has ended')) {
+      // Guard 2: If the Reply/Whisper composer is gone on this open chat (e.g., visitor was banned,
+      // chat closed, or session ended), immediately clear it from the queue!
+      if (!this.hasActiveReplyComposer()) {
+        this.clearEndedOrBannedChat(headerVisitorName, bodyText);
+        return;
+      }
+
+      // Guard 3: Detect explicit end / ban system notices appearing after the latest message bubble
+      const lowerBody = bodyText.toLowerCase();
+      const endPhrases = [
+        'ended the chat',
+        'chat has ended',
+        'ended the conversation',
+        'conversation has ended',
+        'was banned',
+        'has banned',
+        'banned visitor'
+      ];
+      let latestEndIdx = -1;
+      for (const phrase of endPhrases) {
+        const idx = lowerBody.lastIndexOf(phrase);
+        if (idx > latestEndIdx) latestEndIdx = idx;
+      }
+      if (latestEndIdx !== -1) {
         const lastBubble = messageItems[messageItems.length - 1].bubble;
-        const lastBubbleText = (lastBubble.innerText || '').trim();
-        const endedIdx = bodyText.lastIndexOf('ended the chat');
-        const bubbleIdx = bodyText.lastIndexOf(lastBubbleText);
-        if (endedIdx > bubbleIdx) {
-          if (headerVisitorName) {
-            removeChatById(headerVisitorName);
-          }
-          state.transientStatus = 'ended';
-          saveSharedState();
-          if (this.badge) this.badge.renderQueue();
+        const lastBubbleText = (lastBubble.innerText || '').trim().toLowerCase();
+        const bubbleIdx = lowerBody.lastIndexOf(lastBubbleText);
+        if (latestEndIdx > bubbleIdx) {
+          this.clearEndedOrBannedChat(headerVisitorName, bodyText);
           return;
         }
       }
